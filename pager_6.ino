@@ -1,3 +1,17 @@
+// =====================
+// ARDUINO IDE BOARD SETTINGS
+// =====================
+// Board:            ESP32 Dev Module
+// Upload Speed:     921600
+// CPU Frequency:    240MHz (WiFi/BT)
+// Flash Frequency:  80MHz
+// Flash Mode:       DIO
+// Flash Size:       4MB (32Mb)
+// Partition Scheme: Default 4MB with spiffs (1.2MB APP/1.5MB SPIFFS)
+// Core Debug Level: None
+// PSRAM:            Disabled
+// =====================
+
 #include <RadioLib.h>
 #include <SPI.h>
 #include <Adafruit_GFX.h>
