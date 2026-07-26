@@ -15,15 +15,34 @@ An ESP32-based DAPNET pager using a CC1101 radio module and ST7789 display.
 | ST7789 DC | 2 |
 | ST7789 RST | 4 |
 
-Display: 170×320 ST7789
+Display: 170×320 ST7789 (landscape)
 
 ## Features
 
 - Receives POCSAG on 439.9875 MHz at 1200 baud
 - Filters messages to specific capcodes
-- Word-wrapped message display with scrolling
+- Word-wrapped message display with scrolling (up to 80 chars per message)
+- Each message shown as a timestamp line followed by the message text
 - Real-time clock synced from NTP at boot (UK GMT/BST)
 - Falls back to uptime display (`~HH:MM:SS`) if NTP fails
+- Permanent status bar showing clock, NTP status and radio status
+
+## Display layout
+
+```
+┌─────────────────────────────────┐
+│ 14:32:01                        │
+│ Hello from DAPNET               │
+│ 14:35:12                        │
+│ Another message that wraps      │
+│ across multiple lines           │
+│                                 │
+├─────────────────────────────────┤
+│ 14:35:12  NTP:OK  R:OK          │
+└─────────────────────────────────┘
+```
+
+The status bar is permanently reserved at the bottom and cannot be overwritten by messages.
 
 ## Configuration
 
