@@ -20,6 +20,7 @@
 // =====================
 #define CC1101_CS   27
 #define CC1101_GDO2 25
+#define BTN_CLEAR   33
 
 #define LCD_CS   15
 #define LCD_DC   2
@@ -52,17 +53,34 @@ const uint32_t allowedCapcodes[] = {
 const uint8_t capcodeCount = sizeof(allowedCapcodes) / sizeof(allowedCapcodes[0]);
 
 // =====================
-// DISPLAY BUFFER
+// DISPLAY
 // =====================
-const uint8_t MAX_LINES = 24;
-String screenBuffer[MAX_LINES];
-uint8_t lineCount = 0;
-
 const uint8_t TEXT_SIZE  = 2;
 const uint8_t CHAR_W     = 6 * TEXT_SIZE;
 const uint8_t CHAR_H     = 8 * TEXT_SIZE;
 const uint8_t STATUS_H   = 12;   // px reserved at bottom for status bar
-                                  // separator is 1px above that
+
+// Scratch buffer for the current screen view (rebuilt on each draw)
+const uint8_t MAX_LINES = 8;
+String screenBuffer[MAX_LINES];
+uint8_t lineCount = 0;
+
+// =====================
+// MESSAGE QUEUE
+// =====================
+struct Message {
+  String time;
+  String text;
+};
+
+const uint8_t MAX_MESSAGES = 20;
+Message msgQueue[MAX_MESSAGES];
+uint8_t msgCount = 0;   // total messages stored
+uint8_t msgRead  = 0;   // how many have been shown to the user
+
+enum DisplayState { IDLE, WAITING, READING };
+DisplayState displayState = IDLE;
+uint32_t waitingShownMs = 0;   // millis() when waiting screen last appeared
 
 // =====================
 // STATUS STATE
@@ -154,13 +172,39 @@ uint8_t wrapLine(
 // SCREEN HANDLING
 // =====================
 void addLine(const String& line) {
-  if (lineCount >= MAX_LINES) {
-    for (uint8_t i = 1; i < MAX_LINES; i++) {
-      screenBuffer[i - 1] = screenBuffer[i];
-    }
-    lineCount = MAX_LINES - 1;
+  if (lineCount < MAX_LINES) {
+    screenBuffer[lineCount++] = line;
   }
-  screenBuffer[lineCount++] = line;
+}
+
+void showWaiting() {
+  uint8_t  unread = msgCount - msgRead;
+  String   line1  = String(unread) + (unread == 1 ? " message" : " messages");
+  String   line2  = "waiting";
+  uint16_t msgH   = lcd.height() - STATUS_H - 1;
+
+  lcd.fillRect(0, 0, lcd.width(), msgH, ST77XX_BLACK);
+
+  uint16_t y  = (msgH - 2 * CHAR_H) / 2;
+  uint16_t x1 = (lcd.width() - line1.length() * CHAR_W) / 2;
+  uint16_t x2 = (lcd.width() - line2.length() * CHAR_W) / 2;
+
+  lcd.setCursor(x1, y);           lcd.print(line1);
+  lcd.setCursor(x2, y + CHAR_H);  lcd.print(line2);
+
+  drawStatusBar();
+  lineCount = 0;
+  displayState = WAITING;
+  waitingShownMs = millis();
+}
+
+void showMessage(uint8_t idx) {
+  lineCount = 0;
+  addLine(msgQueue[idx].time);
+  String wrapped[4];
+  uint8_t lines = wrapLine(msgQueue[idx].text, wrapped, 4, lcd.width());
+  for (uint8_t i = 0; i < lines; i++) addLine(wrapped[i]);
+  displayState = READING;
 }
 
 void drawStatusBar() {
@@ -184,6 +228,14 @@ void drawStatusBar() {
   lcd.print("  R:");
   lcd.setTextColor(radioOk ? ST77XX_GREEN : ST77XX_RED);
   lcd.print(radioOk ? "OK" : "!!");
+
+  uint8_t unread = msgCount - msgRead;
+  if (unread > 0) {
+    String label = "MSG:" + String(unread);
+    lcd.setCursor(lcd.width() - label.length() * 6 - 2, barY + 2);
+    lcd.setTextColor(ST77XX_YELLOW);
+    lcd.print(label);
+  }
 
   // restore defaults for message area
   lcd.setTextSize(TEXT_SIZE);
@@ -268,6 +320,8 @@ void setup() {
   }
   // ---------------------
 
+  pinMode(BTN_CLEAR, INPUT_PULLUP);
+
   pager.startReceive(CC1101_GDO2, LOCK_CAPCODE);
 
   // Clear startup text and draw the initial status bar
@@ -285,6 +339,29 @@ void loop() {
     lastStatusMs = millis();
   }
 
+  if (displayState == WAITING && millis() - waitingShownMs >= 10000) {
+    uint16_t msgH = lcd.height() - STATUS_H - 1;
+    lcd.fillRect(0, 0, lcd.width(), msgH, ST77XX_BLACK);
+    displayState = IDLE;
+  }
+
+  // Button: step through messages, then clear on final press
+  static bool lastBtn = HIGH;
+  bool btn = digitalRead(BTN_CLEAR);
+  if (lastBtn == HIGH && btn == LOW) {
+    if (msgRead < msgCount) {
+      showMessage(msgRead++);
+      redrawScreen();
+    } else {
+      msgCount = 0;
+      msgRead  = 0;
+      lineCount = 0;
+      displayState = IDLE;
+      redrawScreen();
+    }
+  }
+  lastBtn = btn;
+
   if (pager.available() >= 3) {
     String msg;
     int state = pager.readData(msg);
@@ -294,16 +371,17 @@ void loop() {
     Serial.print(" msg='");
     Serial.print(msg);
     Serial.println("'");
+
     if (state == RADIOLIB_ERR_NONE && msg.length() > 0) {
-      addLine(timestamp());
-
-      String wrapped[4];  // 80 chars / 26 chars per line = 4 lines max
-      uint8_t lines = wrapLine(msg, wrapped, 4, lcd.width());
-      for (uint8_t i = 0; i < lines; i++) {
-        addLine(wrapped[i]);
+      if (msgCount < MAX_MESSAGES) {
+        msgQueue[msgCount].time = timestamp();
+        msgQueue[msgCount].text = msg;
+        msgCount++;
       }
-
-      redrawScreen();
+      // Only interrupt the display if the user isn't mid-reading
+      if (displayState != READING) {
+        showWaiting();
+      }
     }
   }
 }
