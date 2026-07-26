@@ -14,6 +14,7 @@ An ESP32-based DAPNET pager using a CC1101 radio module and ST7789 display.
 | ST7789 CS | 15 |
 | ST7789 DC | 2 |
 | ST7789 RST | 4 |
+| Clear button | 33 (to GND) |
 
 Display: 170×320 ST7789 (landscape)
 
@@ -21,28 +22,45 @@ Display: 170×320 ST7789 (landscape)
 
 - Receives POCSAG on 439.9875 MHz at 1200 baud
 - Filters messages to specific capcodes
-- Word-wrapped message display with scrolling (up to 80 chars per message)
-- Each message shown as a timestamp line followed by the message text
+- Up to 20 messages queued; inbox-style reading with a single button
+- Word-wrapped message text (up to 80 chars per message)
 - Real-time clock synced from NTP at boot (UK GMT/BST)
 - Falls back to uptime display (`~HH:MM:SS`) if NTP fails
-- Permanent status bar showing clock, NTP status and radio status
+- Permanent status bar showing clock, NTP status, radio status and unread count
+
+## Message flow
+
+1. **Message arrives** — screen shows centred "N messages waiting" and blanks after 10 seconds. The pager continues receiving in the background.
+2. **Press button** — reads messages one at a time, each showing the timestamp on the first line and message text below.
+3. **Press button after last message** — clears all messages and returns to blank screen.
 
 ## Display layout
 
 ```
-┌─────────────────────────────────┐
-│ 14:32:01                        │
-│ Hello from DAPNET               │
-│ 14:35:12                        │
-│ Another message that wraps      │
-│ across multiple lines           │
-│                                 │
-├─────────────────────────────────┤
-│ 14:35:12  NTP:OK  R:OK          │
-└─────────────────────────────────┘
+┌──────────────────────────────────────┐
+│                                      │
+│           2 messages                 │
+│             waiting                  │
+│                                      │
+├──────────────────────────────────────┤
+│ 14:35:12  NTP:OK  R:OK      MSG:2   │
+└──────────────────────────────────────┘
 ```
 
-The status bar is permanently reserved at the bottom and cannot be overwritten by messages.
+While reading a message:
+
+```
+┌──────────────────────────────────────┐
+│ 14:32:01                             │
+│ Hello from DAPNET, this is a longer  │
+│ message that wraps onto a second     │
+│ line automatically                   │
+├──────────────────────────────────────┤
+│ 14:35:12  NTP:OK  R:OK      MSG:1   │
+└──────────────────────────────────────┘
+```
+
+The status bar is permanently reserved at the bottom. `MSG:n` (yellow) shows the unread count and disappears when all messages have been read.
 
 ## Configuration
 
