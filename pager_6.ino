@@ -58,9 +58,17 @@ const uint8_t MAX_LINES = 24;
 String screenBuffer[MAX_LINES];
 uint8_t lineCount = 0;
 
-const uint8_t TEXT_SIZE = 2;
-const uint8_t CHAR_W = 6 * TEXT_SIZE;
-const uint8_t CHAR_H = 8 * TEXT_SIZE;
+const uint8_t TEXT_SIZE  = 2;
+const uint8_t CHAR_W     = 6 * TEXT_SIZE;
+const uint8_t CHAR_H     = 8 * TEXT_SIZE;
+const uint8_t STATUS_H   = 12;   // px reserved at bottom for status bar
+                                  // separator is 1px above that
+
+// =====================
+// STATUS STATE
+// =====================
+bool radioOk = false;
+bool ntpOk   = false;
 
 // =====================
 // TIME (NTP-set, falls back to uptime)
@@ -155,12 +163,46 @@ void addLine(const String& line) {
   screenBuffer[lineCount++] = line;
 }
 
+void drawStatusBar() {
+  uint16_t sepY = lcd.height() - STATUS_H - 1;
+  uint16_t barY = lcd.height() - STATUS_H;
+
+  lcd.drawFastHLine(0, sepY, lcd.width(), ST77XX_CYAN);
+  lcd.fillRect(0, barY, lcd.width(), STATUS_H, ST77XX_BLACK);
+
+  lcd.setTextSize(1);
+  lcd.setCursor(2, barY + 2);
+
+  lcd.setTextColor(ST77XX_WHITE);
+  lcd.print(timestamp());
+
+  lcd.print("  NTP:");
+  lcd.setTextColor(ntpOk ? ST77XX_GREEN : ST77XX_RED);
+  lcd.print(ntpOk ? "OK" : "--");
+
+  lcd.setTextColor(ST77XX_WHITE);
+  lcd.print("  R:");
+  lcd.setTextColor(radioOk ? ST77XX_GREEN : ST77XX_RED);
+  lcd.print(radioOk ? "OK" : "!!");
+
+  // restore defaults for message area
+  lcd.setTextSize(TEXT_SIZE);
+  lcd.setTextColor(ST77XX_WHITE);
+}
+
 void redrawScreen() {
-  lcd.fillScreen(ST77XX_BLACK);
+  uint16_t msgH      = lcd.height() - STATUS_H - 1;  // px available for messages
+  uint8_t  maxVisible = msgH / CHAR_H;
+
+  lcd.fillRect(0, 0, lcd.width(), msgH, ST77XX_BLACK);
   lcd.setCursor(0, 0);
-  for (uint8_t i = 0; i < lineCount; i++) {
+
+  uint8_t start = (lineCount > maxVisible) ? lineCount - maxVisible : 0;
+  for (uint8_t i = start; i < lineCount; i++) {
     lcd.println(screenBuffer[i]);
   }
+
+  drawStatusBar();
 }
 
 // =====================
@@ -192,6 +234,7 @@ void setup() {
     lcd.println(radioState);
     while (true);
   }
+  radioOk = true;
   pager.begin(RX_FREQ, RX_BAUD);
   radio.setRxBandwidth(45.0);
   radio.setFrequencyDeviation(15.0);
@@ -211,7 +254,8 @@ void setup() {
     configTime(NTP_GMT_OFFSET_SEC, NTP_DAYLIGHT_OFFSET_SEC, NTP_SERVER);
     lcd.print("NTP...");
     struct tm timeinfo;
-    if (getLocalTime(&timeinfo, 8000)) {
+    ntpOk = getLocalTime(&timeinfo, 8000);
+    if (ntpOk) {
       char tbuf[20];
       strftime(tbuf, sizeof(tbuf), "%H:%M:%S", &timeinfo);
       lcd.println(tbuf);
@@ -226,13 +270,21 @@ void setup() {
 
   pager.startReceive(CC1101_GDO2, LOCK_CAPCODE);
 
-  lcd.println("Listening...");
+  // Clear startup text and draw the initial status bar
+  lcd.fillRect(0, 0, lcd.width(), lcd.height() - STATUS_H - 1, ST77XX_BLACK);
+  drawStatusBar();
 }
 
 // =====================
 // LOOP
 // =====================
 void loop() {
+  static uint32_t lastStatusMs = 0;
+  if (millis() - lastStatusMs >= 1000) {
+    drawStatusBar();
+    lastStatusMs = millis();
+  }
+
   if (pager.available() >= 3) {
     String msg;
     int state = pager.readData(msg);
@@ -243,11 +295,10 @@ void loop() {
     Serial.print(msg);
     Serial.println("'");
     if (state == RADIOLIB_ERR_NONE && msg.length() > 0) {
-      String fullLine = timestamp() + " " + msg;
+      addLine(timestamp());
 
-      String wrapped[6];
-      uint8_t lines = wrapLine(fullLine, wrapped, 6, lcd.width());
-
+      String wrapped[4];  // 80 chars / 26 chars per line = 4 lines max
+      uint8_t lines = wrapLine(msg, wrapped, 4, lcd.width());
       for (uint8_t i = 0; i < lines; i++) {
         addLine(wrapped[i]);
       }
