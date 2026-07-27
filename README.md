@@ -14,7 +14,8 @@ An ESP32-based DAPNET pager using a CC1101 radio module and ST7789 display.
 | ST7789 CS | 15 |
 | ST7789 DC | 2 |
 | ST7789 RST | 4 |
-| Clear button | 33 (to GND) |
+| ST7789 BL | 32 |
+| Clear/wake button | 33 (to GND) |
 
 Display: 170×320 ST7789 (landscape)
 
@@ -27,20 +28,22 @@ Display: 170×320 ST7789 (landscape)
 - Real-time clock synced from NTP at boot (UK GMT/BST)
 - Falls back to uptime display (`~HH:MM:SS`) if NTP fails
 - Permanent status bar showing clock, NTP status, radio status and unread count
+- Display and backlight sleep after 20 seconds of inactivity; button or incoming message wakes it
 
 ## Message flow
 
-1. **Message arrives** — screen shows centred "N messages waiting" and blanks after 10 seconds. The pager continues receiving in the background.
-2. **Press button** — reads messages one at a time, each showing the timestamp on the first line and message text below.
-3. **Press button after last message** — clears all messages and returns to blank screen.
+1. **Message arrives** — display wakes and shows centred "New Message"; blanks after 10 seconds but the pager continues receiving in the background.
+2. **Press button (if sleeping)** — wakes the display. If messages are waiting, "New Message" is shown.
+3. **Press button (awake)** — reads messages one at a time, each showing the timestamp on the first line and message text below.
+4. **Press button after last message** — clears all messages and returns to idle.
+5. **No activity for 20 seconds** — display and backlight turn off automatically.
 
 ## Display layout
 
 ```
 ┌──────────────────────────────────────┐
 │                                      │
-│           2 messages                 │
-│             waiting                  │
+│           New Message                │
 │                                      │
 ├──────────────────────────────────────┤
 │ 14:35:12  NTP:OK  R:OK      MSG:2   │
