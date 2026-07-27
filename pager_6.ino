@@ -39,6 +39,7 @@
 #define LCD_CS   15
 #define LCD_DC   2
 #define LCD_RST  4
+#define LCD_BL   32   // backlight GPIO
 
 
 // =====================
@@ -73,6 +74,8 @@ const uint8_t TEXT_SIZE  = 2;
 const uint8_t CHAR_W     = 6 * TEXT_SIZE;
 const uint8_t CHAR_H     = 8 * TEXT_SIZE;
 const uint8_t STATUS_H   = 12;   // px reserved at bottom for status bar
+const uint32_t SLEEP_TIMEOUT_MS = 20000;  // idle ms before display sleeps
+const uint32_t WAKE_MS          = 20000;  // ms display stays on after wake/activity
 
 // Scratch buffer for the current screen view (rebuilt on each draw)
 const uint8_t MAX_LINES = 8;
@@ -92,9 +95,10 @@ Message msgQueue[MAX_MESSAGES];
 uint8_t msgCount = 0;   // total messages stored
 uint8_t msgRead  = 0;   // how many have been shown to the user
 
-enum DisplayState { IDLE, WAITING, READING };
+enum DisplayState { IDLE, WAITING, READING, SLEEPING };
 DisplayState displayState = IDLE;
 uint32_t waitingShownMs = 0;   // millis() when waiting screen last appeared
+uint32_t lastActiveMs   = 0;   // millis() of last user interaction or message
 
 // =====================
 // STATUS STATE
@@ -192,19 +196,16 @@ void addLine(const String& line) {
 }
 
 void showWaiting() {
-  uint8_t  unread = msgCount - msgRead;
-  String   line1  = String(unread) + (unread == 1 ? " message" : " messages");
-  String   line2  = "waiting";
-  uint16_t msgH   = lcd.height() - STATUS_H - 1;
+  const char* label = "New Message";
+  uint16_t msgH = lcd.height() - STATUS_H - 1;
 
   lcd.fillRect(0, 0, lcd.width(), msgH, ST77XX_BLACK);
 
-  uint16_t y  = (msgH - 2 * CHAR_H) / 2;
-  uint16_t x1 = (lcd.width() - line1.length() * CHAR_W) / 2;
-  uint16_t x2 = (lcd.width() - line2.length() * CHAR_W) / 2;
+  uint16_t y = (msgH - CHAR_H) / 2;
+  uint16_t x = (lcd.width() - strlen(label) * CHAR_W) / 2;
 
-  lcd.setCursor(x1, y);           lcd.print(line1);
-  lcd.setCursor(x2, y + CHAR_H);  lcd.print(line2);
+  lcd.setCursor(x, y);
+  lcd.print(label);
 
   drawStatusBar();
   lineCount = 0;
@@ -221,33 +222,58 @@ void showMessage(uint8_t idx) {
   displayState = READING;
 }
 
+void displaySleep() {
+  lcd.enableDisplay(false);
+  if (LCD_BL >= 0) digitalWrite(LCD_BL, LOW);
+  displayState = SLEEPING;
+}
+
+void displayWake() {
+  if (LCD_BL >= 0) digitalWrite(LCD_BL, HIGH);
+  lcd.enableDisplay(true);
+  lastActiveMs = millis();
+  if (msgCount > msgRead) {
+    showWaiting();
+  } else {
+    uint16_t msgH = lcd.height() - STATUS_H - 1;
+    lcd.fillRect(0, 0, lcd.width(), msgH, ST77XX_BLACK);
+    drawStatusBar();
+    displayState = IDLE;
+  }
+}
+
 void drawStatusBar() {
   uint16_t sepY = lcd.height() - STATUS_H - 1;
   uint16_t barY = lcd.height() - STATUS_H;
 
   lcd.drawFastHLine(0, sepY, lcd.width(), ST77XX_CYAN);
-  lcd.fillRect(0, barY, lcd.width(), STATUS_H, ST77XX_BLACK);
 
   lcd.setTextSize(1);
   lcd.setCursor(2, barY + 2);
 
-  lcd.setTextColor(ST77XX_WHITE);
+  // Draw each field with a black background so characters overwrite cleanly
+  // without needing a fillRect clear (which causes visible flicker)
+  lcd.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
   lcd.print(timestamp());
 
   lcd.print("  NTP:");
-  lcd.setTextColor(ntpOk ? ST77XX_GREEN : ST77XX_RED);
+  lcd.setTextColor(ntpOk ? ST77XX_GREEN : ST77XX_RED, ST77XX_BLACK);
   lcd.print(ntpOk ? "OK" : "--");
 
-  lcd.setTextColor(ST77XX_WHITE);
+  lcd.setTextColor(ST77XX_WHITE, ST77XX_BLACK);
   lcd.print("  R:");
-  lcd.setTextColor(radioOk ? ST77XX_GREEN : ST77XX_RED);
+  lcd.setTextColor(radioOk ? ST77XX_GREEN : ST77XX_RED, ST77XX_BLACK);
   lcd.print(radioOk ? "OK" : "!!");
 
+  // MSG:n — fixed width field (4 chars max "MSG:9"), clear then draw
   uint8_t unread = msgCount - msgRead;
+  const uint8_t msgFieldW = 6 * 6;  // "MSG:99" = 6 chars
+  uint16_t msgX = lcd.width() - msgFieldW - 2;
+  lcd.fillRect(msgX, barY, msgFieldW + 2, STATUS_H, ST77XX_BLACK);
   if (unread > 0) {
     String label = "MSG:" + String(unread);
     lcd.setCursor(lcd.width() - label.length() * 6 - 2, barY + 2);
-    lcd.setTextColor(ST77XX_YELLOW);
+    lcd.setTextColor(ST77XX_YELLOW, ST77XX_BLACK);
     lcd.print(label);
   }
 
@@ -334,9 +360,12 @@ void setup() {
   }
   // ---------------------
 
+  if (LCD_BL >= 0) { pinMode(LCD_BL, OUTPUT); digitalWrite(LCD_BL, HIGH); }
   pinMode(BTN_CLEAR, INPUT_PULLUP);
 
   pager.startReceive(CC1101_GDO2, LOCK_CAPCODE);
+
+  lastActiveMs = millis();
 
   // Clear startup text and draw the initial status bar
   lcd.fillRect(0, 0, lcd.width(), lcd.height() - STATUS_H - 1, ST77XX_BLACK);
@@ -347,31 +376,46 @@ void setup() {
 // LOOP
 // =====================
 void loop() {
+  // Status bar tick (skip while sleeping)
   static uint32_t lastStatusMs = 0;
-  if (millis() - lastStatusMs >= 1000) {
+  if (displayState != SLEEPING && millis() - lastStatusMs >= 1000) {
     drawStatusBar();
     lastStatusMs = millis();
   }
 
+  // Blank waiting message after 10 s
   if (displayState == WAITING && millis() - waitingShownMs >= 10000) {
     uint16_t msgH = lcd.height() - STATUS_H - 1;
     lcd.fillRect(0, 0, lcd.width(), msgH, ST77XX_BLACK);
     displayState = IDLE;
   }
 
-  // Button: step through messages, then clear on final press
+  // Sleep after inactivity
+  if (displayState != SLEEPING && millis() - lastActiveMs >= SLEEP_TIMEOUT_MS) {
+    displaySleep();
+  }
+
+  // Button
   static bool lastBtn = HIGH;
   bool btn = digitalRead(BTN_CLEAR);
   if (lastBtn == HIGH && btn == LOW) {
-    if (msgRead < msgCount) {
-      showMessage(msgRead++);
-      redrawScreen();
+    if (displayState == SLEEPING) {
+      // First press just wakes; if messages are waiting, showWaiting() is called inside displayWake()
+      displayWake();
     } else {
-      msgCount = 0;
-      msgRead  = 0;
-      lineCount = 0;
-      displayState = IDLE;
-      redrawScreen();
+      lastActiveMs = millis();
+      if (msgRead < msgCount) {
+        showMessage(msgRead++);
+        redrawScreen();
+      } else if (msgCount > 0) {
+        // All messages read — clear and return to idle
+        msgCount = 0;
+        msgRead  = 0;
+        lineCount = 0;
+        displayState = IDLE;
+        redrawScreen();
+      }
+      // If no messages, button press just resets the sleep timer (done above)
     }
   }
   lastBtn = btn;
@@ -392,8 +436,10 @@ void loop() {
         msgQueue[msgCount].text = msg;
         msgCount++;
       }
-      // Only interrupt the display if the user isn't mid-reading
-      if (displayState != READING) {
+      lastActiveMs = millis();
+      if (displayState == SLEEPING) {
+        displayWake();
+      } else if (displayState != READING) {
         showWaiting();
       }
     }
